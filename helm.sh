@@ -23,7 +23,7 @@ else
   exit 1
 fi
 # --- end runfiles.bash initialization ---
-#export RUNFILES_LIB_DEBUG=1
+# export RUNFILES_LIB_DEBUG=1
 
 platform=$(uname)
 if [ "$platform" == "Darwin" ]; then

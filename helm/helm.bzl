@@ -3,8 +3,6 @@ load("@bazel_skylib//lib:paths.bzl", "paths")
 HELM_CMD_PREFIX = """
 echo "#!/usr/bin/env bash" > $@
 cat $(location @com_github_deviavir_rules_helm//:runfiles_bash) >> $@
-echo "export NAMESPACE=$$(grep NAMESPACE bazel-out/stable-status.txt | cut -d ' ' -f 2)" >> $@
-echo "export BUILD_USER=$$(grep BUILD_USER bazel-out/stable-status.txt | cut -d ' ' -f 2)" >> $@
 cat <<EOF >> $@
 #export RUNFILES_LIB_DEBUG=1 # For runfiles debugging
 
@@ -43,7 +41,7 @@ for s in $(SRCS); do
     break
   fi
 done
-$(location @com_github_deviavir_rules_helm//:helm) package {package_flags} $$CHARTLOC
+$(location @com_github_deviavir_rules_helm//:helm) package {package_flags} $$CHARTLOC 2> /dev/null
 mv *tgz $@
 """.format(
             package_flags = package_flags,
@@ -69,7 +67,13 @@ def _helm_cmd(cmd, args, name, helm_cmd_name, values_yaml = None, values = None)
         args = args,
     )
 
-def helm_release(name, release_name, chart, values_yaml = None, values = None, namespace = ""):
+def helm_release(name,
+    release_name,
+    chart,
+    values_yaml = None,
+    values = None,
+    namespace = "",
+    kube_context = ""):
     """Defines a helm release.
 
     A given target has the following executable targets generated:
@@ -91,6 +95,14 @@ def helm_release(name, release_name, chart, values_yaml = None, values = None, n
     helm_cmd_name = name + "_run_helm_cmd.sh"
     genrule_srcs = ["@com_github_deviavir_rules_helm//:runfiles_bash", chart]
 
+    global_flags = []
+    if kube_context:
+        global_flags.append("--kube-context %s" % kube_context)
+    if namespace:
+        global_flags.append("--namespace %s" % namespace)
+
+    global_flags = " ".join(global_flags)
+
     # build --set params
     set_params = _build_helm_set_args(values)
 
@@ -100,23 +112,21 @@ def helm_release(name, release_name, chart, values_yaml = None, values = None, n
         values_param = "-f $(location %s)" % values_yaml
         genrule_srcs.append(values_yaml)
 
+    HELM_CMD = """
+export CHARTLOC=$(location """ + chart + """)
+
+if [ "\$$1" == "upgrade" ]; then
+    helm \$$@ """ + release_name + " \$$CHARTLOC " + global_flags + " " + set_params + " " + values_param + """
+else
+    helm \$$@ """ + release_name + " " + global_flags + """
+fi
+EOF"""
     native.genrule(
         name = name,
         stamp = True,
         srcs = genrule_srcs,
         outs = [helm_cmd_name],
-        cmd = HELM_CMD_PREFIX + """
-export CHARTLOC=$(location """ + chart + """)
-EXPLICIT_NAMESPACE=""" + namespace + """
-NAMESPACE=\$${EXPLICIT_NAMESPACE:-\$$NAMESPACE}
-export NS=\$${NAMESPACE:-\$${BUILD_USER}}
-if [ "\$$1" == "upgrade" ]; then
-    helm \$$@ """ + release_name + " \$$CHARTLOC --namespace \$$NS " + set_params + " " + values_param + """
-else
-    helm \$$@ """ + release_name + " --namespace \$$NS " + """
-fi
-
-EOF""",
+        cmd = HELM_CMD_PREFIX + HELM_CMD,
     )
     _helm_cmd("install", ["upgrade", "--install"], name, helm_cmd_name, values_yaml, values)
     _helm_cmd("install.wait", ["upgrade", "--install", "--wait"], name, helm_cmd_name, values_yaml, values)
